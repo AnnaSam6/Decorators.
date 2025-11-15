@@ -1,0 +1,244 @@
+import os
+import requests
+from bs4 import BeautifulSoup
+import time
+from datetime import datetime
+
+# Декоратор logger
+def logger(path):
+    def __logger(old_function):
+        def new_function(*args, **kwargs):
+            call_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            result = old_function(*args, **kwargs)
+            
+            log_entry = (
+                f"{call_time} - Function: {old_function.__name__}\n"
+                f"Arguments: args={args}, kwargs={kwargs}\n"
+                f"Return value: {result}\n"
+                f"{'-'*50}\n"
+            )
+            
+            with open(path, 'a', encoding='utf-8') as log_file:
+                log_file.write(log_entry)
+            
+            return result
+        return new_function
+    return __logger
+
+class HabrParser:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        self.articles = []
+
+    @logger('habr_parser.log')
+    def get_page(self, page=1):
+        """Получить страницу со статьями"""
+        url = 'https://habr.com/ru/articles/'
+        params = {'page': page} if page > 1 else {}
+        
+        try:
+            response = self.session.get(url, params=params)
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as e:
+            return f"Ошибка при запросе: {e}"
+
+    @logger('habr_parser.log')
+    def parse_articles_list(self, html):
+        """Парсинг списка статей на странице"""
+        soup = BeautifulSoup(html, 'html.parser')
+        articles = soup.find_all('article', class_='tm-articles-list__item')
+        
+        parsed_articles = []
+        for article in articles:
+            try:
+                # Заголовок статьи
+                title_elem = article.find('h2', class_='tm-title')
+                title = title_elem.text.strip() if title_elem else 'Без названия'
+                
+                # Ссылка на статью
+                link_elem = article.find('a', class_='tm-title__link')
+                link = 'https://habr.com' + link_elem.get('href') if link_elem else None
+                
+                # Автор
+                author_elem = article.find('a', class_='tm-user-info__username')
+                author = author_elem.text.strip() if author_elem else 'Неизвестный автор'
+                
+                # Дата публикации
+                time_elem = article.find('time')
+                date = time_elem.get('datetime') if time_elem else 'Дата не указана'
+                
+                # Рейтинг
+                rating_elem = article.find('span', class_='tm-votes-meter__value')
+                rating = rating_elem.text.strip() if rating_elem else '0'
+                
+                # Количество просмотров
+                views_elem = article.find('span', class_='tm-icon-counter__value')
+                views = views_elem.text.strip() if views_elem else '0'
+                
+                # Хабы (теги)
+                hubs = []
+                hub_elems = article.find_all('a', class_='tm-publication-hub__link')
+                for hub in hub_elems:
+                    hubs.append(hub.text.strip())
+                
+                parsed_articles.append({
+                    'title': title,
+                    'link': link,
+                    'author': author,
+                    'date': date,
+                    'rating': rating,
+                    'views': views,
+                    'hubs': hubs
+                })
+            except Exception as e:
+                print(f"Ошибка при парсинге статьи: {e}")
+                continue
+        
+        return parsed_articles
+
+    @logger('habr_parser.log')
+    def get_article_content(self, url):
+        """Получить полный текст статьи"""
+        try:
+            response = self.session.get(url)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Получаем основной контент статьи
+            content_elem = soup.find('div', class_='tm-article-body')
+            if content_elem:
+                # Удаляем ненужные элементы (реклама, скрипты и т.д.)
+                for elem in content_elem.find_all(['script', 'style', 'div.tm-article-comments']):
+                    elem.decompose()
+                
+                content = content_elem.get_text(separator='\n', strip=True)
+                return content[:500] + "..." if len(content) > 500 else content  # Ограничиваем длину
+            return "Контент не найден"
+        except Exception as e:
+            return f"Ошибка при получении контента: {e}"
+
+    @logger('habr_parser.log')
+    def parse_habr(self, pages=3):
+        """Основной метод парсинга"""
+        all_articles = []
+        
+        for page in range(1, pages + 1):
+            print(f"Парсинг страницы {page}...")
+            html = self.get_page(page)
+            
+            if "Ошибка" not in html:
+                articles = self.parse_articles_list(html)
+                all_articles.extend(articles)
+            
+            # Задержка между запросами
+            time.sleep(1)
+        
+        self.articles = all_articles
+        return len(all_articles)
+
+    @logger('habr_parser.log')
+    def save_articles_to_file(self, filename='habr_articles.txt'):
+        """Сохранить статьи в файл"""
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(f"Парсинг статей с Habr.com\n")
+            f.write(f"Всего статей: {len(self.articles)}\n")
+            f.write("=" * 80 + "\n\n")
+            
+            for i, article in enumerate(self.articles, 1):
+                f.write(f"Статья #{i}\n")
+                f.write(f"Заголовок: {article['title']}\n")
+                f.write(f"Автор: {article['author']}\n")
+                f.write(f"Дата: {article['date']}\n")
+                f.write(f"Рейтинг: {article['rating']}\n")
+                f.write(f"Просмотры: {article['views']}\n")
+                f.write(f"Хабы: {', '.join(article['hubs'])}\n")
+                f.write(f"Ссылка: {article['link']}\n")
+                
+                # Получаем контент для первых 2 статей (чтобы не перегружать)
+                if i <= 2 and article['link']:
+                    f.write("\nКраткое содержание:\n")
+                    content = self.get_article_content(article['link'])
+                    f.write(f"{content}\n")
+                    time.sleep(1)  # Задержка между запросами контента
+                
+                f.write("-" * 80 + "\n\n")
+        
+        return f"Сохранено {len(self.articles)} статей в файл {filename}"
+
+    @logger('habr_parser.log')
+    def filter_by_hub(self, hub_name):
+        """Фильтровать статьи по хабу"""
+        filtered = [
+            article for article in self.articles
+            if any(hub_name.lower() in hub.lower() for hub in article['hubs'])
+        ]
+        return filtered
+
+    @logger('habr_parser.log')
+    def get_top_rated_articles(self, top_n=5):
+        """Получить топ статей по рейтингу"""
+        rated_articles = [article for article in self.articles if article['rating'].lstrip('-').isdigit()]
+        sorted_articles = sorted(rated_articles, key=lambda x: int(x['rating']), reverse=True)
+        return sorted_articles[:top_n]
+
+    @logger('habr_parser.log')
+    def get_statistics(self):
+        """Статистика по статьям"""
+        total = len(self.articles)
+        authors = len(set(article['author'] for article in self.articles))
+        total_hubs = len(set(hub for article in self.articles for hub in article['hubs']))
+        
+        # Статьи с положительным рейтингом
+        positive_rated = len([
+            article for article in self.articles 
+            if article['rating'].lstrip('-').isdigit() and int(article['rating']) > 0
+        ])
+        
+        stats = {
+            'total_articles': total,
+            'unique_authors': authors,
+            'total_hubs': total_hubs,
+            'positive_rated_articles': positive_rated,
+            'average_articles_per_author': round(total / authors, 2) if authors > 0 else 0
+        }
+        return stats
+
+def main():
+    # Удаляем старый лог-файл если существует
+    if os.path.exists('habr_parser.log'):
+        os.remove('habr_parser.log')
+    
+    parser = HabrParser()
+    
+    print("Запуск парсера статей с Habr...")
+    
+    # Парсим статьи
+    count = parser.parse_habr(pages=2)
+    print(f"Найдено статей: {count}")
+    
+    # Сохраняем в файл
+    result = parser.save_articles_to_file()
+    print(result)
+    
+    # Получаем статистику
+    stats = parser.get_statistics()
+    print("\nСтатистика:")
+    for key, value in stats.items():
+        print(f"{key}: {value}")
+    
+    # Топ статей по рейтингу
+    top_articles = parser.get_top_rated_articles(3)
+    print(f"\nТоп-3 статей по рейтингу:")
+    for i, article in enumerate(top_articles, 1):
+        print(f"{i}. {article['title']} (рейтинг: {article['rating']})")
+    
+    # Фильтр по хабу Python
+    python_articles = parser.filter_by_hub('Python')
+    print(f"\nСтатей с хабом 'Python': {len(python_articles)}")
+
+if __name__ == '__main__':
+    main()
